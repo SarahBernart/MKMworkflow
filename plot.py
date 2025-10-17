@@ -4,21 +4,21 @@ import re
 
 plt.rcParams.update({
     'font.size': 12,
-    'axes.titlesize': 14,
-    'axes.labelsize': 13,
+    'axes.titlesize': 12,
+    'axes.labelsize': 12,
     'xtick.labelsize': 12,
     'ytick.labelsize': 12,
-    'legend.fontsize': 11,
+    'legend.fontsize': 12,
 })
 
 def read_ped_file(filename):
     ped_data = {}
     ts_indices = {}
     reaction_order = {}
-    
+
     with open(filename, "r") as f:
         lines = f.readlines()
-    
+
     for line in lines:
         if line.startswith("ped_energies_"):
             mechanism = line.split("=")[0].strip().replace("ped_energies_", "")
@@ -34,7 +34,7 @@ def read_ped_file(filename):
                 reaction_order[mechanism] = []
             else:
                 raise ValueError(f"Could not parse reaction coordinates in line: {line}")
-    
+
     for mechanism in reaction_order.keys():
         index = 0
         for line in lines:
@@ -42,12 +42,35 @@ def read_ped_file(filename):
                 reaction_order[mechanism].append((line.strip(), index))
                 index += 1
         ts_indices[mechanism] = [idx for name, idx in reaction_order[mechanism] if "TS_" in name]
-    
+
     return ped_data, ts_indices
 
-ped_file = "temp/ped_0.txt"
+# === Load data ===
+ped_file = "temp/ped_450.txt"
 ped_data, ts_indices = read_ped_file(ped_file)
 
+# === Define absolute coordinate shifts ===
+coordinate_shifts_absolute = {
+    "mix": [(5.0, 2.0)],
+    "mix2": [(5.0, 2.0), (6.0, 1.0), (7.0, 1.0)],
+    "lh":   [(7.0, 2.0)],
+    "l2":   [(2.0, 1.0), (4.0, 1.0), (5.0, 2.0)]
+    }
+
+def apply_absolute_shifts(ped_data, mech, shifts):
+    rc_array = ped_data[mech]["coordinates"]
+
+    for threshold_rc, shift in sorted(shifts, reverse=True):
+        print(f"[{mech}] Shift all points ≥ {threshold_rc} by {shift}")
+        for i, x in enumerate(rc_array):
+            if x >= threshold_rc:
+                rc_array[i] += shift
+
+# === Apply shifts ===
+for mech, shifts in coordinate_shifts_absolute.items():
+    apply_absolute_shifts(ped_data, mech, shifts)
+
+# === Assign variables ===
 rc1_lh, set1 = ped_data["lh"]["coordinates"], ped_data["lh"]["energies"]
 rc1_l2, set2 = ped_data["l2"]["coordinates"], ped_data["l2"]["energies"]
 rc1_mvk, set3 = ped_data["mvk"]["coordinates"], ped_data["mvk"]["energies"]
@@ -67,6 +90,7 @@ print(f"MVK: {ts_mvk}")
 print(f"MIX: {ts_mix}")
 print(f"MIX2: {ts_mix2}")
 
+# === Plotting ===
 marker_width = 0.5
 
 def interpol_ts(xxx, yyy):
@@ -81,20 +105,18 @@ def interpol_ts(xxx, yyy):
     xx += xx2
     return xx, yy
 
-# Custom vertical offsets to avoid overlap
 custom_offsets = {
-    'mix' : {6: (-0.5, 0.0)},
-    'mix2': {3: (-0.5, 0.0)},
-    'mvk' : {6: ( 0.0, 0.2)},
-    'mvk' : {8: ( 0.0,-0.1)},
-    'mvk' : {10:( 0.2, 0.2)}
+     'mix' : {7: (0.5, 0.0), 8: (0.5, 0.0),10: (0.5, 0.0)},
+     'mix2': {6: (0.5,0.0), 8: (0.5,0.0)},
+     'lh'  : {5: (-0.5,0.0)},
+     'mvk' : {1: (0.5,0.0),3: (-0.5, 0.0)} 
 }
-default_offset = 0.2
+default_offset = 0.15
 
 def plot_mechanism(rc, set_values, ts_indices, color, label, mechanism_name):
     for i in range(len(rc)):
         if i not in ts_indices:
-            dy, dx = custom_offsets.get(mechanism_name, {}).get(i,(default_offset, 0.0))
+            dy, dx = custom_offsets.get(mechanism_name, {}).get(i, (default_offset, 0.0))
             plt.hlines(set_values[i], rc[i] - marker_width / 2, rc[i] + marker_width / 2,
                        color=color, linewidth=2)
             plt.text(rc[i] + dx, set_values[i] + dy, f"{set_values[i]:.2f}",
@@ -102,46 +124,50 @@ def plot_mechanism(rc, set_values, ts_indices, color, label, mechanism_name):
 
     for i in range(1, len(rc)):
         if i in ts_indices:
-            dy, dx = custom_offsets.get(mechanism_name, {}).get(i,(default_offset, 0.0))
-            xxx = [rc[i-1] + marker_width / 2, rc[i], rc[i+1] - marker_width / 2]
-            yyy = [set_values[i-1], set_values[i], set_values[i+1]]
-            spontaneous = set_values[i] < set_values[i-1]
+            if i - 1 < 0 or i + 1 >= len(rc):
+                continue  # skip TS at edges
+            dy, dx = custom_offsets.get(mechanism_name, {}).get(i, (default_offset, 0.0))
+            rc_mid = (rc[i - 1] + rc[i + 1]) / 2
+            xxx = [rc[i - 1] + marker_width / 2, rc_mid, rc[i + 1] - marker_width / 2]
+            yyy = [set_values[i - 1], set_values[i], set_values[i + 1]]
+            spontaneous = set_values[i] < set_values[i - 1]
             xx, yy = interpol_ts(xxx, yyy)
             plt.plot(xx, yy, color=color, linewidth=2)
-            plt.plot(rc[i] + dx, set_values[i], 'o', color=color, markersize=0.01)
+            plt.plot(rc_mid + dx, set_values[i], 'o', color=color, markersize=0.01)
             if not spontaneous:
-                plt.text(rc[i], set_values[i] + dy - 0.1, f"{set_values[i]:.2f}",
+                plt.text(rc_mid, set_values[i] + dy - 0.1, f"{set_values[i]:.2f}",
                          color=color, fontsize=11, ha='center')
         elif i - 1 in ts_indices:
             continue
         else:
-            plt.plot([rc[i-1] + marker_width / 2, rc[i] - marker_width / 2],
-                     [set_values[i-1], set_values[i]], color=color, linestyle='dashed')
+            plt.plot([rc[i - 1] + marker_width / 2, rc[i] - marker_width / 2],
+                     [set_values[i - 1], set_values[i]], color=color, linestyle='dashed')
 
-plt.figure(figsize=(8, 5))
-plot_mechanism(rc1_mix2, set5, ts_mix2, 'green',     'Mix2', 'mix2')
-plot_mechanism(rc1_l2,   set2, ts_l2,   'blue',      'LH, concerted', 'l2')
-plot_mechanism(rc1_lh,   set1, ts_lh,   'lightblue', 'LH, stepwise', 'lh')
-plot_mechanism(rc1_mvk,  set3, ts_mvk,  'orange',    'MvK', 'mvk')
-plot_mechanism(rc1_mix,  set4, ts_mix,  'gray',      'Mix', 'mix')
+# === Final plot ===
+plt.figure(figsize=(8, 6))
+plot_mechanism(rc1_mix2, set5, ts_mix2, '#47D45A',  'Mix2', 'mix2')
+plot_mechanism(rc1_lh,   set1, ts_lh,   '#83CBEB',  'LH, stepwise', 'lh')
+plot_mechanism(rc1_l2,   set2, ts_l2,   '#4344E4',  'LH, concerted', 'l2')
+plot_mechanism(rc1_mvk,  set3, ts_mvk,  '#FFA032',  'MvK', 'mvk')
+plot_mechanism(rc1_mix,  set4, ts_mix,  '#7F7F7F',  'Mix', 'mix')
 
 plt.xlabel('Reaction coordinate')
-plt.ylabel('$\Delta G$ [eV]')
-plt.title('$Pd_{4}/CeO_{2}(111)$')
-plt.ylim(-8, 2)
+plt.ylabel(r'$\Delta G$ [eV]')
+plt.title(r'$Pd_{10}/CeO_{2}(111)$')
+plt.ylim(-7.5, 5)
 
-# Legend
-plt.plot([], [], color='lightblue', label='LH, step.', linewidth=2)
-plt.plot([], [], color='blue',      label='LH, conc.', linewidth=2)
-plt.plot([], [], color='orange',    label='MvK', linewidth=2)
-plt.plot([], [], color='grey',      label='Mix, step.', linewidth=2)
-plt.plot([], [], color='green',     label='Mix, conc.', linewidth=2)
+plt.plot([], [], color='#4344E4',   label='LH, conc.', linewidth=2)
+plt.plot([], [], color='#FFA032',   label='MvK', linewidth=2)
+plt.plot([], [], color='#7F7F7F',   label='Mix, step.', linewidth=2)
+plt.plot([], [], color='#47D45A',   label='Mix, conc.', linewidth=2)
+plt.plot([], [], color='#83CBEB',   label='LH, step.', linewidth=2)
 plt.legend()
 
 plt.gca().set_xticklabels([])
 plt.gca().set_xticks([])
 
 plt.tight_layout()
-plt.savefig('data/Pd1.pdf')
+#plt.savefig('data/Pd1.pdf')
 plt.show()
+
 
