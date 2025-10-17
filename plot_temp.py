@@ -1,11 +1,21 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import re
+import matplotlib.animation as animation
 import os
-import time
+import re
 
+# === Plot style ===
+plt.rcParams.update({
+    'font.size': 12,
+    'axes.titlesize': 12,
+    'axes.labelsize': 12,
+    'xtick.labelsize': 12,
+    'ytick.labelsize': 12,
+    'legend.fontsize': 12,
+})
+
+# === Read PED file ===
 def read_ped_file(filename):
-    """Reads ped.txt and extracts reaction coordinates, energies, and identifies TS positions."""
     ped_data = {}
     ts_indices = {}
     reaction_order = {}
@@ -26,8 +36,6 @@ def read_ped_file(filename):
                 numbers = match.group(1).split(",")
                 ped_data[mechanism]["coordinates"] = np.array([float(x.strip()) for x in numbers])
                 reaction_order[mechanism] = []
-            else:
-                raise ValueError(f"Could not parse reaction coordinates in line: {line}")
 
     for mechanism in reaction_order.keys():
         index = 0
@@ -39,68 +47,123 @@ def read_ped_file(filename):
 
     return ped_data, ts_indices
 
+# === Coordinate shifts ===
+coordinate_shifts_absolute = {
+    "mix": [(5.0, 1.0)],
+    "mix2": [(5.0, 1.0), (6.0, 1.0), (7.0, 1.0)],
+    "lh":   [(7.0, 2.0)],
+    "l2":   [(2.0, 1.0), (4.0, 1.0), (5.0, 1.0)]
+}
+
+def apply_absolute_shifts(ped_data, mech, shifts):
+    rc_array = ped_data[mech]["coordinates"]
+    for threshold_rc, shift in sorted(shifts, reverse=True):
+        for i, x in enumerate(rc_array):
+            if x >= threshold_rc:
+                rc_array[i] += shift
+
+# === Sine interpolation (your version) ===
+def interpol_ts(xxx, yyy):
+    if yyy[1] < yyy[0]:  # Spontaneous
+        yyy[1] = yyy[2]
+    xx = list(np.linspace(xxx[0], xxx[1], 50))
+    prefac = yyy[1] - yyy[0]
+    yy = [yyy[0] + prefac * np.sin(0.5 * np.pi * (x - xxx[0]) / (xxx[1] - xxx[0])) for x in xx]
+    xx2 = list(np.linspace(xxx[1], xxx[2], 50))
+    prefac = yyy[2] - yyy[1]
+    yy += [yyy[2] - prefac * np.sin(0.5 * np.pi * (x - xxx[0]) / (xxx[2] - xxx[1])) for x in xx2]
+    xx += xx2
+    return xx, yy
+
+# === Plotting with text and exact styling ===
+marker_width = 0.5
+default_offset = 0.15
+custom_offsets = {
+    'mix2': {6: (0.25, 0.0)},
+}
+
+def plot_mechanism(ax, rc, set_values, ts_indices, color, label, mech_name):
+    for i in range(len(rc)):
+        if i not in ts_indices:
+            dy, dx = custom_offsets.get(mech_name, {}).get(i, (default_offset, 0.0))
+            ax.hlines(set_values[i], rc[i] - marker_width / 2, rc[i] + marker_width / 2, color=color, linewidth=2)
+            ax.text(rc[i] + dx, set_values[i] + dy, f"{set_values[i]:.2f}", color=color,
+                    fontsize=11, ha='center')
+
+    for i in range(1, len(rc)):
+        if i in ts_indices:
+            if i - 1 < 0 or i + 1 >= len(rc):
+                continue
+            dy, dx = custom_offsets.get(mech_name, {}).get(i, (default_offset, 0.0))
+            rc_mid = (rc[i - 1] + rc[i + 1]) / 2
+            xxx = [rc[i - 1] + marker_width / 2, rc_mid, rc[i + 1] - marker_width / 2]
+            yyy = [set_values[i - 1], set_values[i], set_values[i + 1]]
+            spontaneous = set_values[i] < set_values[i - 1]
+            xx, yy = interpol_ts(xxx, yyy)
+            ax.plot(xx, yy, color=color, linewidth=2)
+            ax.plot(rc_mid + dx, set_values[i], 'o', color=color, markersize=0.01)
+            if not spontaneous:
+                ax.text(rc_mid, set_values[i] + dy - 0.1, f"{set_values[i]:.2f}",
+                        color=color, fontsize=11, ha='center')
+        elif i - 1 in ts_indices:
+            continue
+        else:
+            ax.plot([rc[i - 1] + marker_width / 2, rc[i] - marker_width / 2],
+                    [set_values[i - 1], set_values[i]], color=color, linestyle='dashed')
+
+# === Load temperature files ===
 temp_folder = "temp"
 ped_files = sorted([f for f in os.listdir(temp_folder) if f.startswith("ped_") and f.endswith(".txt")],
                    key=lambda x: int(x.split("_")[1].split(".")[0]))
 
-plt.ion()
-fig, ax = plt.subplots(figsize=(8, 3))
+fig, ax = plt.subplots(figsize=(10, 7))
 
-while True:
-    for ped_file in ped_files:
-        filepath = os.path.join(temp_folder, ped_file)
-        temperature = ped_file.split("_")[1].split(".")[0]
-        ped_data, ts_indices = read_ped_file(filepath)
+def create_frame(i):
+    ax.clear()
+    ped_file = ped_files[i]
+    temperature = ped_file.split("_")[1].split(".")[0]
+    filepath = os.path.join(temp_folder, ped_file)
+    ped_data, ts_indices = read_ped_file(filepath)
 
-        ax.clear()
-        marker_width = 0.5
+    # Apply shifts
+    for mech, shifts in coordinate_shifts_absolute.items():
+        if mech in ped_data:
+            apply_absolute_shifts(ped_data, mech, shifts)
 
-        ts_lh = ts_indices.get("lh", [])
-        ts_mvk = ts_indices.get("mvk", [])
-        ts_mix = ts_indices.get("mix", [])
+    # Plot each mechanism
+    mechanisms = [
+        ("mix2", "#47D45A", 'Mix2'),
+        ("l2",   "#4344E4", 'LH, concerted'),
+        ("lh",   "#83CBEB", 'LH, stepwise'),
+        ("mvk",  "#FFA032", 'MvK'),
+        ("mix",  "#7F7F7F", 'Mix'),
+    ]
 
-        def interpol_ts(xxx, yyy):
-            if yyy[1] < yyy[0]:
-                yyy[1] = yyy[2]
+    for mech, color, label in mechanisms:
+        if mech in ped_data:
+            plot_mechanism(ax, ped_data[mech]["coordinates"], ped_data[mech]["energies"],
+                           ts_indices.get(mech, []), color, label, mech)
 
-            xx = list(np.linspace(xxx[0], xxx[1], 50))
-            prefac = yyy[1] - yyy[0]
-            yy = [yyy[0] + prefac * np.sin(0.5 * np.pi * (x - xxx[0]) / (xxx[1] - xxx[0])) for x in xx]
-            xx2 = list(np.linspace(xxx[1], xxx[2], 50))
-            prefac = yyy[2] - yyy[1]
-            yy += [yyy[2] - prefac * np.sin(0.5 * np.pi * (x - xxx[0]) / (xxx[2] - xxx[1])) for x in xx2]
-            xx += xx2
-            return xx, yy
+    ax.set_xlabel("Reaction coordinate")
+    ax.set_ylabel(r'$\Delta G$ [eV]')
+    ax.set_title(rf'$Pd_4/CeO_2(111)$ – {temperature} K')
+    ax.set_ylim(-7.5, 5)
+    ax.set_xticks([])
+    ax.set_xticklabels([])
 
-        def plot_mechanism(rc, set_values, ts_indices, color, label):
-            for i in range(len(rc)):
-                if i not in ts_indices:
-                    ax.hlines(set_values[i], rc[i] - marker_width / 2, rc[i] + marker_width / 2, color=color, linewidth=2)
-            for i in range(1, len(rc)):
-                if i in ts_indices:
-                    xxx = [rc[i-1] + marker_width / 2, rc[i], rc[i+1] - marker_width / 2]
-                    yyy = [set_values[i-1], set_values[i], set_values[i+1]]
-                    xx, yy = interpol_ts(xxx, yyy)
-                    ax.plot(xx, yy, color=color, linewidth=2)
-                    ax.plot(rc[i], set_values[i], 'o', color=color, markersize=0.01)
-                elif i - 1 in ts_indices:
-                    continue
-                else:
-                    ax.plot([rc[i-1] + marker_width / 2, rc[i] - marker_width / 2],
-                             [set_values[i-1], set_values[i]], color=color, linestyle='dashed')
-    
-        plot_mechanism(ped_data["lh"]["coordinates"], ped_data["lh"]["energies"], ts_lh, 'lightblue', 'LH')
-        plot_mechanism(ped_data["mvk"]["coordinates"], ped_data["mvk"]["energies"], ts_mvk, 'black', 'MVK')
-        plot_mechanism(ped_data["mix"]["coordinates"], ped_data["mix"]["energies"], ts_mix, 'gray', 'MIX')
+    for mech, color, label in mechanisms:
+        ax.plot([], [], color=color, label=label, linewidth=2)
+    ax.legend()
 
-        ax.set_xlabel("Reaction Coordinate")
-        ax.set_ylabel("ΔG [eV]")
-        ax.set_title(f"CO Oxidation (Mixed route), M1 at {temperature} K")
-        ax.legend(title=f"Temperature: {temperature} K")
-        ax.set_ylim(-8, 3)
-        plt.pause(0.001)
+    return fig,
 
-plt.ioff()
+# === Create animation ===
+ani = animation.FuncAnimation(fig, create_frame, frames=len(ped_files), blit=False)
+
+# === Save video ===
+os.makedirs("movie", exist_ok=True)
+ani.save("movie/Pd4_movie.mp4", writer='ffmpeg', fps=20, dpi=200)
+
 plt.close(fig)
-print("All temperature plots displayed successfully.")
-plt.close() 
+print("Movie saved successfully to movie/Pd4_movie.mp4")
+
