@@ -20,46 +20,81 @@ def read_data_file(data_file):
     return data
 
 def process_mechanism(mech_file, data):
-    """Processes a mechanism file to compute total energies, including gas-phase species."""
+    """Processes a mechanism file to compute total energies using only the ZPE/S keys specified per line."""
     mechanism = []
     with open(mech_file, 'r') as f:
         lines = f.readlines()
         for line in lines:
-            parts = line.split('+')
-            species = [p.strip() for p in parts]
-            total_energy = 0.0
-            total_zpe = 0.0
-            total_S = 0.0
-            energy_terms = []
+            parts = line.strip().split('+')
+            main_species = parts[0].strip()
+            zpe_keys = []
+            gas_species = []
+
+            for p in parts[1:]:
+                p = p.strip()
+                if p.startswith("zpe_"):
+                    zpe_keys.append(p)
+                elif p.endswith("(g)") or p.endswith("(s)"):
+                    gas_species.append(p.replace("(g)", "_g").replace("(s)", ""))
+
+            main_lookup = main_species.replace("(g)", "_g").replace("(s)", "")
+            if main_lookup not in data:
+                print(f"⚠️ Warning: Main species '{main_lookup}' not found in data!")
+                continue
+
+            # Total energy, ZPE and entropy from main species
+            total_energy = data[main_lookup]["total_e"]
+            zpe_total = 0.0
+            S_total = 0.0
             zpe_terms = []
             S_terms = []
-            
-            for sp in species:
-                multiplier = 1
-                if '*' in sp:  # Handle multipliers like 2*CO
-                    multiplier, sp = sp.split('*')
-                    multiplier = int(multiplier.strip())
-                    sp = sp.strip()
-                
-                sp_lookup = sp.replace("(g)", "_g") if "(g)" in sp else sp.replace("(s)", "")  # Match correctly
-                if sp_lookup in data:
-                    energy_terms.append(f"({data[sp_lookup]['total_e']:.6f} * {multiplier})")
-                    total_energy += multiplier * data[sp_lookup]['total_e']
-                    
-                    zpe_terms.append(f"({sum(data[sp_lookup]['zpe'].values()):.6f} * {multiplier})")
-                    total_zpe += multiplier * sum(data[sp_lookup]['zpe'].values())
-                    
-                    S_terms.append(f"({sum(data[sp_lookup]['S'].values()):.6f} * {multiplier})")
-                    total_S += multiplier * sum(data[sp_lookup]['S'].values())
-                elif sp_lookup.startswith("zpe_"):
-                    continue  # Ignore zpe_ species from mech file as they are not actual species
-                else:
-                    print(f"Warning: Species {sp_lookup} not found in data!")
-            
-            total_energy += total_zpe  # Adding ZPE correction
-            total_energy += total_S * T  # Subtract entropy contribution correctly
 
-            mechanism.append((line.strip(), total_energy, total_zpe, total_S, energy_terms, zpe_terms, S_terms, species))
+            for z in zpe_keys:
+                s = "S_" + z.split("zpe_")[1]
+                zval = data[main_lookup]["zpe"].get(z, None)
+                sval = data[main_lookup]["S"].get(s, None)
+                if zval is None:
+                    print(f"⚠️ Missing ZPE '{z}' for species '{main_lookup}'")
+                    zval = 0.0
+                if sval is None:
+                    print(f"⚠️ Missing Entropy '{s}' for species '{main_lookup}'")
+                    sval = 0.0
+                zpe_total += zval
+                S_total += sval
+                zpe_terms.append(f"{z}={zval:.6f}")
+                S_terms.append(f"{s}={sval:.6f}")
+
+            # Gas-phase species
+            energy_terms = [f"{total_energy:.6f} (electronic)"]
+            for g in gas_species:
+                multiplier = 1
+                if '*' in g:
+                    try:
+                        multiplier_str, g = g.split('*', 1)
+                        multiplier = int(multiplier_str.strip())
+                    except:
+                        print(f"⚠️ Could not parse multiplier in gas species '{g}'")
+                        continue
+
+                if g not in data:
+                    print(f"⚠️ Gas species '{g}' not found in data!")
+                    continue
+
+                ge = data[g]["total_e"]
+                gzpe = sum(data[g]["zpe"].values())
+                gS = sum(data[g]["S"].values())
+                total_energy += multiplier * ge
+                zpe_total += multiplier * gzpe
+                S_total += multiplier * gS
+                energy_terms.append(f"{multiplier}×{ge:.6f} (from {g})")
+                zpe_terms.append(f"{multiplier}×{gzpe:.6f} (ZPE {g})")
+                S_terms.append(f"{multiplier}×{gS:.6f} (S {g})")
+
+            # Apply ZPE and entropy correction to main energy
+            total_energy += zpe_total
+            total_energy -= S_total * T
+
+            mechanism.append((line.strip(), total_energy, zpe_total, S_total, energy_terms, zpe_terms, S_terms, [main_lookup] + gas_species))
     return mechanism
 
 def compute_ped(output_file, mechanisms):
@@ -107,4 +142,6 @@ if __name__ == "__main__":
         }
     
     compute_ped('data/ped.txt', mechanisms)
+
+
 
