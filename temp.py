@@ -3,7 +3,7 @@ import shutil
 
 # Define the temperature range
 T_start = 0
-T_end = 1500
+T_end = 1000
 T_step = 5
 
 # Ensure temp folder exists
@@ -40,4 +40,6 @@ for T in range(T_start, T_end + 1, T_step):
     shutil.move("data/ped.txt", output_file)
 
 print("All temperature calculations completed and saved in the 'temp' folder.")
+
+
 
